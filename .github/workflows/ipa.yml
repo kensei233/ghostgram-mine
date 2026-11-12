@@ -31,13 +31,16 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: |
-          [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ] || { echo "Нет секретов TG_API_ID / TG_API_HASH"; exit 1; }
           # bundle_id и team_id совпадают с профилями из fake-codesigning; Sideloadly заменит их при подписи.
+          # Без секретов собирается ПРОБНАЯ сборка на ключах из appstore-configuration.json — на телефон её не ставить.
           python3 - <<'EOF'
           import json, os
           config = json.load(open("build-system/appstore-configuration.json"))
-          config["api_id"] = os.environ["TG_API_ID"]
-          config["api_hash"] = os.environ["TG_API_HASH"]
+          if os.environ.get("TG_API_ID") and os.environ.get("TG_API_HASH"):
+              config["api_id"] = os.environ["TG_API_ID"]
+              config["api_hash"] = os.environ["TG_API_HASH"]
+          else:
+              print("::warning::Секретов TG_API_ID / TG_API_HASH нет: пробная сборка, не для установки")
           json.dump(config, open("build-system/ghostgram-configuration.json", "w"), indent=1)
           EOF
 
