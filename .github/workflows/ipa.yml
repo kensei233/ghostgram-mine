@@ -47,6 +47,37 @@ jobs:
       - name: Pin Xcode and patch submodules
         run: GG_PATCHES_ONLY=1 build-system/GGBuild.sh
 
+      - name: Renew fake provisioning profiles
+        # Профили из fake-codesigning просрочены (2026-10-30), plisttool такие не принимает.
+        # Переподписываем их тем же самоподписанным сертификатом с новой датой.
+        working-directory: build-system/Make
+        run: |
+          python3 - <<'EOF'
+          import os, plistlib, subprocess, datetime, tempfile
+          import GenerateProfiles as G
+          certs = "../fake-codesigning/certs"
+          profiles = "../fake-codesigning/profiles"
+          p12 = os.path.join(certs, "SelfSigned.p12")
+          identity = G.get_signing_identity_from_p12(p12)
+          assert identity, "no signing identity in SelfSigned.p12"
+          keychain = G.setup_temp_keychain(p12)
+          try:
+              for name in sorted(os.listdir(profiles)):
+                  if not name.endswith(".mobileprovision"):
+                      continue
+                  path = os.path.join(profiles, name)
+                  data = plistlib.loads(subprocess.check_output(["security", "cms", "-D", "-i", path]))
+                  data["ExpirationDate"] = datetime.datetime.utcnow() + datetime.timedelta(days=365)
+                  data.pop("DER-Encoded-Profile", None)
+                  with tempfile.NamedTemporaryFile(suffix=".plist", delete=False) as f:
+                      plistlib.dump(data, f)
+                  subprocess.check_call(["security", "cms", "-S", "-k", keychain, "-N", identity, "-i", f.name, "-o", path])
+                  os.unlink(f.name)
+                  print("renewed", name, data["ExpirationDate"])
+          finally:
+              G.cleanup_temp_keychain(keychain)
+          EOF
+
       - name: Build
         run: |
           python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
