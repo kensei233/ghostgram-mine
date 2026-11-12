@@ -1,0 +1,63 @@
+name: Build IPA
+
+# Сборка неподписанного IPA для установки через Sideloadly.
+# Запуск вручную: Actions → Build IPA → Run workflow.
+# Нужны два секрета репозитория: TG_API_ID и TG_API_HASH (с my.telegram.org).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 340
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
+          sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app/Contents/Developer"
+          xcodebuild -version
+
+      - name: Write configuration
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ] || { echo "Нет секретов TG_API_ID / TG_API_HASH"; exit 1; }
+          # bundle_id и team_id совпадают с профилями из fake-codesigning; Sideloadly заменит их при подписи.
+          python3 - <<'EOF'
+          import json, os
+          config = json.load(open("build-system/appstore-configuration.json"))
+          config["api_id"] = os.environ["TG_API_ID"]
+          config["api_hash"] = os.environ["TG_API_HASH"]
+          json.dump(config, open("build-system/ghostgram-configuration.json", "w"), indent=1)
+          EOF
+
+      - name: Pin Xcode and patch submodules
+        run: GG_PATCHES_ONLY=1 build-system/GGBuild.sh
+
+      - name: Build
+        run: |
+          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          python3 -u build-system/Make/Make.py --overrideXcodeVersion \
+            build \
+            --configurationPath build-system/ghostgram-configuration.json \
+            --codesigningInformationPath build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="${{ github.run_number }}" \
+            --outputBuildArtifactsPath build-output/ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ghostgram-ipa
+          path: build-output/ipa/Telegram.ipa
+          if-no-files-found: error
+          retention-days: 7
